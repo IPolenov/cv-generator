@@ -8,6 +8,19 @@ from tkinter import filedialog, messagebox, scrolledtext
 import threading
 import re
 
+# Supported models/providers
+MODEL_OPTIONS = [
+    ("OpenAI GPT-4", "openai-gpt-4"),
+    ("OpenAI GPT-3.5", "openai-gpt-3.5"),
+    ("Google Gemini Pro", "google-gemini-pro")
+]
+
+# Store API keys per provider
+api_keys = {
+    "openai": os.getenv('OPENAI_API_KEY', ''),
+    "google": os.getenv('GOOGLE_API_KEY', '')
+}
+
 # Set your OpenAI API key here or via environment variable
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY', 'your-api-key-here')
 openai.api_key = OPENAI_API_KEY
@@ -28,8 +41,8 @@ def extract_pdf_text(pdf_path):
             text += page.extract_text() or ""
     return text
 
-def generate_cv(job_description, fact_table_text=None):
-    """Send job description and optional fact table to ChatGPT and get a tailored CV."""
+def generate_cv(job_description, fact_table_text=None, model_id="openai-gpt-4", api_key=None):
+    """Send job description and optional fact table to selected AI model and get a tailored CV."""
     prompt = f"""
     На основе этого описания вакансии:
     {job_description}
@@ -38,13 +51,23 @@ def generate_cv(job_description, fact_table_text=None):
         prompt += f"\nФакт-таблица кандидата (PDF):\n{fact_table_text}\n"
     prompt += "Сгенерируй CV кандидата, максимально подходящего под требования вакансии. Формат: ФИО, контакты, опыт, навыки, образование, достижения."
 
-    client = openai.OpenAI(api_key=OPENAI_API_KEY)
-    response = client.chat.completions.create(
-        model="gpt-4",
-        messages=[{"role": "user", "content": prompt}],
-        max_tokens=1000
-    )
-    return response.choices[0].message.content
+    if model_id.startswith("openai"):
+        if not api_key:
+            raise ValueError("Не указан API ключ OpenAI.")
+        import openai
+        client = openai.OpenAI(api_key=api_key)
+        model = "gpt-4" if model_id == "openai-gpt-4" else "gpt-3.5-turbo"
+        response = client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=1000
+        )
+        return response.choices[0].message.content
+    elif model_id == "google-gemini-pro":
+        # Placeholder for Google Gemini API integration
+        raise NotImplementedError("Google Gemini API integration is not implemented yet.")
+    else:
+        raise ValueError("Неизвестная модель/провайдер.")
 
 def save_cv_to_pdf(cv_text, output_path):
     """Save the generated CV to a PDF file."""
@@ -104,12 +127,31 @@ def extract_text_from_files(file_paths):
     return '\n'.join(texts)
 
 def gui_main():
+    def on_model_change(event=None):
+        sel = model_var.get()
+        if sel.startswith("OpenAI"):
+            api_key_entry.delete(0, tk.END)
+            api_key_entry.insert(0, api_keys.get("openai", ""))
+        elif sel.startswith("Google"):
+            api_key_entry.delete(0, tk.END)
+            api_key_entry.insert(0, api_keys.get("google", ""))
+
+    def on_api_key_change(event=None):
+        sel = model_var.get()
+        key = api_key_entry.get().strip()
+        if sel.startswith("OpenAI"):
+            api_keys["openai"] = key
+        elif sel.startswith("Google"):
+            api_keys["google"] = key
+
     def on_generate():
         result_text.delete(1.0, tk.END)
         error_label.config(text='')
         url = url_entry.get().strip()
         direct_text = direct_text_field.get(1.0, tk.END).strip()
         file_paths = file_list.copy()
+        model_label, model_id = next((l, v) for l, v in MODEL_OPTIONS if l == model_var.get())
+        api_key = api_key_entry.get().strip()
         # Try to fetch job description
         job_desc = ''
         if url:
@@ -129,12 +171,14 @@ def gui_main():
         # Compose prompt and call AI in a thread
         def ai_thread():
             try:
-                cv = generate_cv(job_desc, files_text)
+                cv = generate_cv(job_desc, files_text, model_id=model_id, api_key=api_key)
                 result_text.insert(tk.END, cv)
                 try:
                     save_cv_to_pdf(cv, "generated_cv.pdf")
                 except Exception as e:
                     error_label.config(text=f"Ошибка сохранения PDF: {e}")
+            except NotImplementedError as e:
+                error_label.config(text=f"{e}")
             except Exception as e:
                 error_label.config(text=f"Ошибка генерации CV: {e}")
         threading.Thread(target=ai_thread).start()
@@ -155,7 +199,20 @@ def gui_main():
 
     root = tk.Tk()
     root.title("AI CV Generator")
-    root.geometry("800x700")
+    root.geometry("800x750")
+
+    # Top frame for API key and model selection
+    top_frame = tk.Frame(root)
+    top_frame.pack(fill='x', padx=5, pady=5)
+    tk.Label(top_frame, text="API ключ:").pack(side='left')
+    api_key_entry = tk.Entry(top_frame, width=40)
+    api_key_entry.pack(side='left', padx=5)
+    tk.Label(top_frame, text="Модель:").pack(side='left', padx=(10,0))
+    model_var = tk.StringVar(value=MODEL_OPTIONS[0][0])
+    model_menu = tk.OptionMenu(top_frame, model_var, *(l for l, v in MODEL_OPTIONS), command=on_model_change)
+    model_menu.pack(side='left', padx=5)
+    api_key_entry.bind('<FocusOut>', on_api_key_change)
+    api_key_entry.bind('<Return>', on_api_key_change)
 
     tk.Label(root, text="URL вакансии (с автоисправлением):").pack(anchor='w')
     url_entry = tk.Entry(root, width=100)
@@ -186,6 +243,7 @@ def gui_main():
     btn_generate = tk.Button(root, text="Сгенерировать CV", command=on_generate)
     btn_generate.pack(pady=10)
 
+    on_model_change()  # Set initial API key
     root.mainloop()
 
 if __name__ == "__main__":
