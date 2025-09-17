@@ -3,6 +3,10 @@ import openai
 import os
 import pdfplumber
 from fpdf import FPDF
+import tkinter as tk
+from tkinter import filedialog, messagebox, scrolledtext
+import threading
+import re
 
 # Set your OpenAI API key here or via environment variable
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY', 'your-api-key-here')
@@ -73,16 +77,116 @@ def get_job_description_from_multiline_input():
         return fetch_job_description(lines[0].strip())
     return "\n".join(lines)
 
-def main():
-    job_description = get_job_description_from_multiline_input()
-    pdf_path = input("Введите путь к PDF-файлу с факт-таблицей (или оставьте пустым): ").strip()
-    fact_table_text = extract_pdf_text(pdf_path) if pdf_path else None
-    cv = generate_cv(job_description, fact_table_text)
-    print("\nСгенерированное CV:\n")
-    print(cv)
-    output_pdf = "generated_cv.pdf"
-    save_cv_to_pdf(cv, output_pdf)
-    print(f"\nCV сохранено в PDF: {output_pdf}")
+def correct_url(url):
+    url = url.strip()
+    if not url:
+        return ''
+    # Add http if missing
+    if not re.match(r'^https?://', url):
+        url = 'http://' + url
+    # Remove spaces
+    url = url.replace(' ', '')
+    return url
+
+def extract_text_from_files(file_paths):
+    texts = []
+    for path in file_paths:
+        try:
+            if path.lower().endswith('.pdf'):
+                texts.append(extract_pdf_text(path))
+            elif path.lower().endswith(('.txt', '.md', '.csv')):
+                with open(path, 'r', encoding='utf-8', errors='ignore') as f:
+                    texts.append(f.read())
+            else:
+                texts.append(f"[Файл {os.path.basename(path)}: не поддерживается для извлечения текста]")
+        except Exception as e:
+            texts.append(f"[Ошибка при чтении {os.path.basename(path)}: {e}]")
+    return '\n'.join(texts)
+
+def gui_main():
+    def on_generate():
+        result_text.delete(1.0, tk.END)
+        error_label.config(text='')
+        url = url_entry.get().strip()
+        direct_text = direct_text_field.get(1.0, tk.END).strip()
+        file_paths = file_list.copy()
+        # Try to fetch job description
+        job_desc = ''
+        if url:
+            try:
+                url_corr = correct_url(url)
+                job_desc = fetch_job_description(url_corr)
+            except Exception as e:
+                error_label.config(text=f"Ошибка загрузки вакансии: {e}")
+                job_desc = ''
+        if not job_desc and direct_text:
+            job_desc = direct_text
+        if not job_desc:
+            error_label.config(text="Не указано описание вакансии или текст для AI.")
+            return
+        # Extract text from files
+        files_text = extract_text_from_files(file_paths) if file_paths else None
+        # Compose prompt and call AI in a thread
+        def ai_thread():
+            try:
+                cv = generate_cv(job_desc, files_text)
+                result_text.insert(tk.END, cv)
+                try:
+                    save_cv_to_pdf(cv, "generated_cv.pdf")
+                except Exception as e:
+                    error_label.config(text=f"Ошибка сохранения PDF: {e}")
+            except Exception as e:
+                error_label.config(text=f"Ошибка генерации CV: {e}")
+        threading.Thread(target=ai_thread).start()
+
+    def on_add_files():
+        paths = filedialog.askopenfilenames(title="Выберите файлы кандидата", filetypes=[
+            ("Документы", "*.pdf *.txt *.md *.csv"),
+            ("Все файлы", "*.*")
+        ])
+        for p in paths:
+            if p not in file_list:
+                file_list.append(p)
+                files_box.insert(tk.END, os.path.basename(p))
+
+    def on_clear_files():
+        file_list.clear()
+        files_box.delete(0, tk.END)
+
+    root = tk.Tk()
+    root.title("AI CV Generator")
+    root.geometry("800x700")
+
+    tk.Label(root, text="URL вакансии (с автоисправлением):").pack(anchor='w')
+    url_entry = tk.Entry(root, width=100)
+    url_entry.pack(fill='x', padx=5)
+
+    tk.Label(root, text="Или введите/вставьте текст для AI (многострочно):").pack(anchor='w')
+    direct_text_field = scrolledtext.ScrolledText(root, height=6)
+    direct_text_field.pack(fill='x', padx=5)
+
+    tk.Label(root, text="Файлы кандидата (PDF, TXT, MD, CSV):").pack(anchor='w')
+    files_frame = tk.Frame(root)
+    files_frame.pack(fill='x', padx=5)
+    files_box = tk.Listbox(files_frame, height=4, width=60)
+    files_box.pack(side='left', fill='y')
+    file_list = []
+    btn_add = tk.Button(files_frame, text="Добавить файлы", command=on_add_files)
+    btn_add.pack(side='left', padx=5)
+    btn_clear = tk.Button(files_frame, text="Очистить", command=on_clear_files)
+    btn_clear.pack(side='left', padx=5)
+
+    tk.Label(root, text="Результат (CV):").pack(anchor='w')
+    result_text = scrolledtext.ScrolledText(root, height=16)
+    result_text.pack(fill='both', expand=True, padx=5)
+
+    error_label = tk.Label(root, text="", fg="red")
+    error_label.pack(anchor='w', padx=5)
+
+    btn_generate = tk.Button(root, text="Сгенерировать CV", command=on_generate)
+    btn_generate.pack(pady=10)
+
+    root.mainloop()
 
 if __name__ == "__main__":
-    main()
+    gui_main()
